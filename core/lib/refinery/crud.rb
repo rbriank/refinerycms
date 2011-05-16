@@ -43,6 +43,7 @@ module Refinery
     def self.append_features(base)
       super
       base.extend(ClassMethods)
+      base.send(:include, HookMethods)
     end
 
     module ClassMethods
@@ -57,6 +58,12 @@ module Refinery
           prepend_before_filter :find_#{singular_name},
                                 :only => [:update, :destroy, :edit, :show]
 
+          def set_what
+            return @what if @what
+            what = "'\#{@#{singular_name}.#{options[:title_attribute]}}'"
+            @what = what
+          end
+
           def new
             @#{singular_name} = #{class_name}.new
           end
@@ -69,35 +76,13 @@ module Refinery
               })
             end
 
-            if (@#{singular_name} = #{class_name}.create(params[:#{singular_name}])).valid?
-              (request.xhr? ? flash.now : flash).notice = t(
-                'refinery.crudify.created',
-                :what => "'\#{@#{singular_name}.#{options[:title_attribute]}}'"
-              )
-
-              unless from_dialog?
-                unless params[:continue_editing] =~ /true|on|1/
-                  redirect_back_or_default(#{options[:redirect_to_url]})
-                else
-                  unless request.xhr?
-                    redirect_to :back
-                  else
-                    render :partial => "/shared/message"
-                  end
-                end
-              else
-                render :text => "<script>parent.window.location = '\#{#{options[:redirect_to_url]}}';</script>"
-              end
+            @instance = @#{singular_name} = #{class_name}.new(params[:#{singular_name}])
+            ok = before_create
+            return ok unless ok === true
+            if @instance.valid? && @instance.save
+              successful_create
             else
-              unless request.xhr?
-                render :action => 'new'
-              else
-                render :partial => "/shared/admin/error_messages",
-                       :locals => {
-                         :object => @#{singular_name},
-                         :include_object_name => true
-                       }
-              end
+              failed_create
             end
           end
 
@@ -106,51 +91,31 @@ module Refinery
           end
 
           def update
+            ok = before_update
+            return ok unless ok === true
             if @#{singular_name}.update_attributes(params[:#{singular_name}])
-              (request.xhr? ? flash.now : flash).notice = t(
-                'refinery.crudify.updated',
-                :what => "'\#{@#{singular_name}.#{options[:title_attribute]}}'"
-              )
-
-              unless from_dialog?
-                unless params[:continue_editing] =~ /true|on|1/
-                  redirect_back_or_default(#{options[:redirect_to_url]})
-                else
-                  unless request.xhr?
-                    redirect_to :back
-                  else
-                    render :partial => "/shared/message"
-                  end
-                end
-              else
-                render :text => "<script>parent.window.location = '\#{#{options[:redirect_to_url]}}';</script>"
-              end
+             successful_update
             else
-              unless request.xhr?
-                render :action => 'edit'
-              else
-                render :partial => "/shared/admin/error_messages",
-                       :locals => {
-                         :object => @#{singular_name},
-                         :include_object_name => true
-                       }
-              end
+             failed_update
             end
           end
 
           def destroy
-            # object gets found by find_#{singular_name} function
-            title = @#{singular_name}.#{options[:title_attribute]}
-            if @#{singular_name}.destroy
-              flash.notice = t('destroyed', :scope => 'refinery.crudify', :what => "'\#{title}'")
-            end
+            set_what
+            ok = before_destroy
+            return ok unless ok === true
 
-            redirect_to #{options[:redirect_to_url]}
+            # object gets found by find_#{singular_name} function
+            if @#{singular_name}.destroy
+              successful_destroy
+            else
+              failed_destroy
+            end
           end
 
           # Finds one single result based on the id params.
           def find_#{singular_name}
-            @#{singular_name} = #{class_name}.find(params[:id],
+            @instance = @#{singular_name} = #{class_name}.find(params[:id],
                                                    :include => #{options[:include].map(&:to_sym).inspect})
           end
 
@@ -305,7 +270,92 @@ module Refinery
 
       end
 
-    end
+    end # ClassMethods
 
+    module HookMethods
+
+    private
+
+      def before_create
+        before_action
+      end
+
+      def before_update
+        before_action
+      end
+
+      def before_destroy
+        before_action
+      end
+
+      def before_action
+        true
+      end
+
+      def successful_create
+        (request.xhr? ? flash.now : flash).notice = t(
+          'refinery.crudify.created',
+          :what => set_what
+        )
+
+        after_success
+      end
+
+      def successful_update
+        (request.xhr? ? flash.now : flash).notice = t(
+          'refinery.crudify.updated',
+          :what => set_what
+        )
+
+        after_success
+      end
+
+      def successful_destroy
+        flash.notice = t('destroyed', :scope => 'refinery.crudify', :what => @what)
+
+        after_success
+      end
+
+      def after_success
+        unless from_dialog?
+          unless params[:continue_editing] =~ /true|on|1/
+            redirect_back_or_default(options[:redirect_to_url])
+          else
+            unless request.xhr?
+              redirect_to :back
+            else
+              render :partial => "/shared/message"
+            end
+          end
+        else
+          render :text => "<script>parent.window.location = '#{options[:redirect_to_url]}';</script>"
+        end
+      end
+
+      def failed_create        
+        after_fail
+      end
+
+      def failed_update
+        after_fail
+      end
+
+      def failed_destroy
+        after_fail
+      end
+
+      def after_fail
+        unless request.xhr?
+          render :action => request.post? ? 'new' : 'edit'
+        else
+          render :partial => "/shared/admin/error_messages",
+                 :locals => {
+                   :object => @instance,
+                   :include_object_name => true
+                 }
+        end
+      end
+
+    end # HookMethods
   end
 end
